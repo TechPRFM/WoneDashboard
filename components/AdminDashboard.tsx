@@ -170,13 +170,8 @@ function useFilteredGroups(data: DashboardData, filters: Filters) {
 
 function useFilteredUpcoming(data: DashboardData, filters: Filters) {
   return useMemo(() => {
-    const query = filters.query.trim().toLowerCase();
     return data.upcomingReview.items
       .filter((item) => {
-        if (query && !upcomingBlob(item).includes(query)) return false;
-        if (filters.sport !== "all" && (item.sport ?? "UNKNOWN") !== filters.sport) return false;
-        if (filters.adapter !== "all" && !list(item.adapterKeys).includes(filters.adapter)) return false;
-        if (filters.year !== "all" && dateOnly(item.eventDate).slice(0, 4) !== filters.year) return false;
         if (filters.upcomingStatus !== "all" && item.reviewLevel !== filters.upcomingStatus) return false;
         return true;
       })
@@ -184,38 +179,26 @@ function useFilteredUpcoming(data: DashboardData, filters: Filters) {
         const rank = { new_adapter_race: 0, needs_mapping: 1, needs_categories: 2, watch: 3, ready: 4 };
         return rank[a.reviewLevel] - rank[b.reviewLevel] || (a.daysUntil ?? 9999) - (b.daysUntil ?? 9999);
       });
-  }, [data.upcomingReview.items, filters]);
+  }, [data.upcomingReview.items, filters.upcomingStatus]);
 }
 
-function useFilteredAdapterUpcoming(data: DashboardData, filters: Filters) {
+function useFilteredAdapterUpcoming(data: DashboardData) {
   return useMemo(() => {
-    const query = filters.query.trim().toLowerCase();
     return data.adapterUpcoming.items
       .filter((item) => !item.matchedInDb)
-      .filter((item) => {
-        if (query && !adapterUpcomingBlob(item).includes(query)) return false;
-        if (filters.adapter !== "all" && item.adapterKey !== filters.adapter) return false;
-        if (filters.year !== "all" && String(item.editionYear ?? "") !== filters.year) return false;
-        return true;
-      })
       .sort((a, b) => String(a.eventDate ?? "9999-12-31").localeCompare(String(b.eventDate ?? "9999-12-31")));
-  }, [data.adapterUpcoming.items, filters]);
+  }, [data.adapterUpcoming.items]);
 }
 
 function useFilteredFailed(data: DashboardData, filters: Filters) {
   return useMemo(() => {
-    const query = filters.query.trim().toLowerCase();
     return data.unverifiedFailed.items
       .filter((item) => {
-        if (query && !failedBlob(item).includes(query)) return false;
-        if (filters.sport !== "all" && "sport" in item && item.sport !== filters.sport) return false;
-        if (filters.adapter !== "all" && !list(item.adapterKeys).includes(filters.adapter)) return false;
-        if (filters.year !== "all" && String(item.year ?? "") !== filters.year) return false;
         if (filters.failedDiagnosis !== "all" && item.diagnosis !== filters.failedDiagnosis) return false;
         return true;
       })
       .sort((a, b) => String(a.diagnosis).localeCompare(String(b.diagnosis)) || String(a.raceName).localeCompare(String(b.raceName)));
-  }, [data.unverifiedFailed.items, filters]);
+  }, [data.unverifiedFailed.items, filters.failedDiagnosis]);
 }
 
 type Filters = {
@@ -276,14 +259,23 @@ function FilterBar({
   setFilters: (next: Filters) => void;
 }) {
   const issueTypes = Object.keys(data.issueSummary.byType).sort() as IssueType[];
+  const raceFiltersActive = Boolean(
+    filters.query ||
+    filters.severity !== "all" ||
+    filters.issueType !== "all" ||
+    filters.sport !== "all" ||
+    filters.adapter !== "all" ||
+    filters.year !== "all" ||
+    filters.onlyIssues
+  );
   return (
     <section className="filter-bar">
       <label className="search-field">
-        <span>Search race, edition, category, adapter</span>
+        <span>Race object filters</span>
         <input
           value={filters.query}
           onChange={(event) => setFilters({ ...filters, query: event.target.value })}
-          placeholder="Try Bhutan, Malnad, missing distance..."
+          placeholder="Search race, edition, category, or adapter..."
         />
       </label>
       <div className="filter-grid">
@@ -348,40 +340,33 @@ function FilterBar({
           </select>
         </label>
         <label>
-          Upcoming
+          Race visibility
           <select
-            value={filters.upcomingStatus}
-            onChange={(event) => setFilters({ ...filters, upcomingStatus: event.target.value as Filters["upcomingStatus"] })}
+            value={filters.onlyIssues ? "issues" : "all"}
+            onChange={(event) => setFilters({ ...filters, onlyIssues: event.target.value === "issues" })}
           >
-            {UPCOMING_REVIEW_LEVELS.map((level) => (
-              <option key={level} value={level}>
-                {level === "all" ? "All upcoming states" : diagnosisLabel(level)}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Failed reason
-          <select
-            value={filters.failedDiagnosis}
-            onChange={(event) => setFilters({ ...filters, failedDiagnosis: event.target.value })}
-          >
-            <option value="all">All failed reasons</option>
-            {Object.keys(data.unverifiedFailed.byDiagnosis)
-              .sort()
-              .map((diagnosis) => (
-                <option key={diagnosis} value={diagnosis}>
-                  {diagnosisLabel(diagnosis)}
-                </option>
-              ))}
+            <option value="all">All race objects</option>
+            <option value="issues">Issues only</option>
           </select>
         </label>
         <button
-          className={filters.onlyIssues ? "toggle active" : "toggle"}
-          onClick={() => setFilters({ ...filters, onlyIssues: !filters.onlyIssues })}
+          className={raceFiltersActive ? "toggle active" : "toggle"}
+          disabled={!raceFiltersActive}
+          onClick={() =>
+            setFilters({
+              ...filters,
+              query: "",
+              severity: "all",
+              issueType: "all",
+              sport: "all",
+              adapter: "all",
+              year: "all",
+              onlyIssues: false,
+            })
+          }
           type="button"
         >
-          {filters.onlyIssues ? "Showing issues" : "Include clean"}
+          {raceFiltersActive ? "Clear race filters" : "All races selected"}
         </button>
       </div>
     </section>
@@ -458,6 +443,8 @@ function UpcomingReviewPanel({
   filters: Filters;
   setFilters: (next: Filters) => void;
 }) {
+  const [shownDbItems, setShownDbItems] = useState(30);
+  const [shownAdapterItems, setShownAdapterItems] = useState(30);
   const allItems = data.upcomingReview.items;
   const countByStatus = (status: DashboardData["upcomingReview"]["items"][number]["reviewLevel"]) =>
     allItems.filter((item) => item.reviewLevel === status).length;
@@ -481,16 +468,8 @@ function UpcomingReviewPanel({
         </div>
         <div className="click-filter-row">
           <FilterChip
-            active={
-              filters.upcomingStatus === "all" &&
-              !filters.query &&
-              filters.sport === "all" &&
-              filters.adapter === "all" &&
-              filters.year === "all"
-            }
-            onClick={() =>
-              setFilters({ ...filters, query: "", sport: "all", adapter: "all", year: "all", upcomingStatus: "all" })
-            }
+            active={filters.upcomingStatus === "all"}
+            onClick={() => setFilters({ ...filters, upcomingStatus: "all" })}
           >
             All upcoming: {number(data.upcomingReview.total)}
           </FilterChip>
@@ -526,7 +505,7 @@ function UpcomingReviewPanel({
           <span>Showing all {number(items.length)} rows after filters</span>
         </div>
         <div className="review-list">
-          {items.map((item) => (
+          {items.slice(0, shownDbItems).map((item) => (
             <article key={item.raceEditionId} className={`review-row ${reviewTone(item.reviewLevel)}`}>
               <div>
                 <span className="review-kicker">
@@ -544,6 +523,11 @@ function UpcomingReviewPanel({
             </article>
           ))}
           {!items.length && <p className="empty">No DB upcoming rows match these filters.</p>}
+          {shownDbItems < items.length && (
+            <button className="ghost" type="button" onClick={() => setShownDbItems((value) => value + 30)}>
+              Show 30 more ({number(items.length - shownDbItems)} remaining)
+            </button>
+          )}
         </div>
       </div>
       <div className="review-subsection adapter-subsection">
@@ -567,7 +551,7 @@ function UpcomingReviewPanel({
           </div>
         )}
         <div className="review-list compact-list">
-          {adapterItems.map((item) => (
+          {adapterItems.slice(0, shownAdapterItems).map((item) => (
             <article key={`${item.adapterKey}:${item.sourceId ?? item.eventName}:${item.eventDate ?? ""}`} className="review-row adapter-row">
               <div>
                 <span className="review-kicker">
@@ -589,6 +573,11 @@ function UpcomingReviewPanel({
                 ? "DB-only mode: no public.adapter_upcoming_events table exists yet, so this tab cannot list adapter-only upcoming races."
                 : "No unmatched adapter-upcoming rows for these filters."}
             </p>
+          )}
+          {shownAdapterItems < adapterItems.length && (
+            <button className="ghost" type="button" onClick={() => setShownAdapterItems((value) => value + 30)}>
+              Show 30 more ({number(adapterItems.length - shownAdapterItems)} remaining)
+            </button>
           )}
         </div>
       </div>
@@ -613,6 +602,7 @@ function UnverifiedFailedPanel({
   filters: Filters;
   setFilters: (next: Filters) => void;
 }) {
+  const [shownItems, setShownItems] = useState(50);
   const topDiagnosis = Object.entries(data.unverifiedFailed.byDiagnosis)
     .sort((a, b) => b[1] - a[1])
     .slice(0, 5);
@@ -630,16 +620,8 @@ function UnverifiedFailedPanel({
         </div>
         <div className="click-filter-row">
           <FilterChip
-            active={
-              filters.failedDiagnosis === "all" &&
-              !filters.query &&
-              filters.sport === "all" &&
-              filters.adapter === "all" &&
-              filters.year === "all"
-            }
-            onClick={() =>
-              setFilters({ ...filters, query: "", sport: "all", adapter: "all", year: "all", failedDiagnosis: "all" })
-            }
+            active={filters.failedDiagnosis === "all"}
+            onClick={() => setFilters({ ...filters, failedDiagnosis: "all" })}
           >
             All failed: {number(data.unverifiedFailed.total)}
           </FilterChip>
@@ -656,10 +638,10 @@ function UnverifiedFailedPanel({
       </div>
       <div className="review-subtitle standalone">
         <strong>Showing all {number(items.length)} failed rows after filters</strong>
-        <span>Use the chips above or global filters to narrow this list.</span>
+        <span>Use the failed-reason chips above to narrow this list.</span>
       </div>
       <div className="review-list">
-        {items.map((item) => (
+        {items.slice(0, shownItems).map((item) => (
           <article key={item.id} className="review-row failed-row">
             <div>
               <span className="review-kicker">
@@ -680,6 +662,11 @@ function UnverifiedFailedPanel({
           </article>
         ))}
         {!items.length && <p className="empty">No failed verification rows match these filters.</p>}
+        {shownItems < items.length && (
+          <button className="ghost" type="button" onClick={() => setShownItems((value) => value + 50)}>
+            Show 50 more ({number(items.length - shownItems)} remaining)
+          </button>
+        )}
       </div>
     </section>
   );
@@ -923,12 +910,13 @@ export default function AdminDashboard({ data }: { data: DashboardData }) {
     year: "all",
     upcomingStatus: "all",
     failedDiagnosis: "all",
-    onlyIssues: true,
+    onlyIssues: false,
   });
   const filteredGroups = useFilteredGroups(data, filters);
   const filteredUpcoming = useFilteredUpcoming(data, filters);
-  const filteredAdapterUpcoming = useFilteredAdapterUpcoming(data, filters);
+  const filteredAdapterUpcoming = useFilteredAdapterUpcoming(data);
   const filteredFailed = useFilteredFailed(data, filters);
+  const [shownGroups, setShownGroups] = useState(100);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const selectedGroup = filteredGroups.find((group) => group.race.id === selectedId) ?? filteredGroups[0] ?? null;
 
@@ -999,6 +987,7 @@ export default function AdminDashboard({ data }: { data: DashboardData }) {
                   year: "all",
                   upcomingStatus: "all",
                   failedDiagnosis: "all",
+                  onlyIssues: false,
                 })
               }
             >
@@ -1007,7 +996,7 @@ export default function AdminDashboard({ data }: { data: DashboardData }) {
           </div>
           <RaceObjectQuickFilters data={data} filters={filters} setFilters={setFilters} />
           <div className="race-list">
-            {filteredGroups.map((group) => (
+            {filteredGroups.slice(0, shownGroups).map((group) => (
               <RaceCard
                 key={group.race.id}
                 group={group}
@@ -1015,6 +1004,11 @@ export default function AdminDashboard({ data }: { data: DashboardData }) {
                 onSelect={() => setSelectedId(group.race.id)}
               />
             ))}
+            {shownGroups < filteredGroups.length && (
+              <button className="ghost" type="button" onClick={() => setShownGroups((value) => value + 100)}>
+                Show 100 more race objects ({number(filteredGroups.length - shownGroups)} remaining)
+              </button>
+            )}
           </div>
         </section>
         <DetailPanel group={selectedGroup} />

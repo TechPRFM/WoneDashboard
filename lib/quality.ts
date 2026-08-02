@@ -199,6 +199,7 @@ export interface RaceEditionNode extends RaceEditionRow {
   categories: RaceCategoryRow[];
   mappings: RaceEditionMappingRow[];
   resultCount: number;
+  resultSources: string[];
   registrationCount: number;
   unmatchedEntryCount: number;
   issues: DashboardIssue[];
@@ -419,8 +420,23 @@ function yearsInText(value: string): number[] {
 
 function eventYear(value: string | null): number | null {
   if (!value) return null;
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? null : parsed.getUTCFullYear();
+  const match = value.match(/^((?:19|20)\d{2})-\d{2}-\d{2}/);
+  return match ? Number(match[1]) : null;
+}
+
+function isKnownRaceAlias(raceTitle: string, editionTitle: string): boolean {
+  const race = normalize(raceTitle);
+  const edition = normalize(editionTitle);
+  return (race === "tata mumbai marathon" && edition === "standard chartered mumbai marathon")
+    || (race === "gtech marathon" && edition === "gtech kerala marathon")
+    || (race === "harvest gold global race" && edition === "harvest global energy race")
+    || (race === "hyrox" && edition.startsWith("hyrox "));
+}
+
+function locationDoesNotRepresentACity(value: string | null): boolean {
+  const location = ascii(value).toLowerCase().trim();
+  return /\b(anywhere|virtual)\b/.test(location)
+    || ["laamu", "lammu maldives", "kutch"].includes(location);
 }
 
 function isAgeGroupLabel(value: string): boolean {
@@ -433,7 +449,7 @@ function expectedDistanceKm(label: string): number | null {
   const text = label.toLowerCase();
   if (isAgeGroupLabel(label)) return null;
   if (/\bhalf\s+marathon\b/.test(text)) return 21.1;
-  if (/\bmarathon\b/.test(text) && !/\bhalf\b/.test(text) && !/\bultra\b/.test(text)) return 42.195;
+  if (/\bmarathon\b/.test(text) && !/\bhalf\b/.test(text) && !/\bultra\b/.test(text)) return 42.2;
   const kmMatch = text.match(/\b(\d+(?:\.\d+)?)\s*k(?:m)?\b/);
   if (kmMatch) return Number(kmMatch[1]);
   const mileMatch = text.match(/\b(\d+(?:\.\d+)?)\s*(?:mi|mile|miles)\b/);
@@ -468,7 +484,7 @@ export function analyzeRaceGroup(group: Omit<RaceEditionGroup, "issues" | "summa
   const editions = group.editions.map((edition) => {
     const issues: DashboardIssue[] = [];
     const score = scoreEditionMatch(group.race, edition);
-    if (score.reasons.length) {
+    if (score.reasons.length && !isKnownRaceAlias(group.race.title, edition.title)) {
       issues.push(
         makeIssue(
           "suspect_edition_match",
@@ -489,6 +505,7 @@ export function analyzeRaceGroup(group: Omit<RaceEditionGroup, "issues" | "summa
     }
 
     const titleYears = yearsInText(edition.title);
+    const hasDownstreamActivity = edition.resultCount > 0 || edition.registrationCount > 0 || edition.unmatchedEntryCount > 0;
     const uniqueTitleYears = Array.from(new Set(titleYears));
     if (titleYears.length > uniqueTitleYears.length) {
       issues.push(
@@ -564,7 +581,7 @@ export function analyzeRaceGroup(group: Omit<RaceEditionGroup, "issues" | "summa
         ),
       );
     }
-    if (!edition.location && !edition.city) {
+    if (!edition.location && !edition.city && hasDownstreamActivity) {
       issues.push(
         makeIssue(
           "missing_location",
@@ -581,7 +598,7 @@ export function analyzeRaceGroup(group: Omit<RaceEditionGroup, "issues" | "summa
           },
         ),
       );
-    } else if (!edition.city) {
+    } else if (edition.location && !edition.city && !locationDoesNotRepresentACity(edition.location)) {
       issues.push(
         makeIssue(
           "missing_structured_city",
@@ -599,7 +616,7 @@ export function analyzeRaceGroup(group: Omit<RaceEditionGroup, "issues" | "summa
         ),
       );
     }
-    if (!edition.categories.length) {
+    if (!edition.categories.length && hasDownstreamActivity) {
       issues.push(
         makeIssue(
           "edition_without_categories",
@@ -617,7 +634,10 @@ export function analyzeRaceGroup(group: Omit<RaceEditionGroup, "issues" | "summa
         ),
       );
     }
-    if (!edition.mappings.length) {
+    const userLinkOnly = edition.resultCount > 0
+      && edition.resultSources.length > 0
+      && edition.resultSources.every((source) => source === "USER_LINK_FIRECRAWL");
+    if (!edition.mappings.length && !userLinkOnly && (edition.registrationCount > 0 || edition.unmatchedEntryCount > 0)) {
       issues.push(
         makeIssue(
           "edition_without_mapping",
@@ -730,7 +750,10 @@ export function analyzeRaceGroup(group: Omit<RaceEditionGroup, "issues" | "summa
         ...edition,
         title: mapping.rawName,
       });
-      if (!mappingScore.autoLooksOkay && mappingScore.sequenceRatio < 0.68) {
+      if (!mappingScore.autoLooksOkay
+        && mappingScore.sequenceRatio < 0.68
+        && normalize(mapping.rawName) !== normalize(edition.title)
+        && !isKnownRaceAlias(group.race.title, mapping.rawName)) {
         issues.push(
           makeIssue(
             "mapping_title_mismatch",

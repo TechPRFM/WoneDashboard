@@ -44,7 +44,7 @@ function connectionString() {
   return `postgresql://${encodeURIComponent(user)}:${encodeURIComponent(password)}@${host}:${port}/${database}?sslmode=require`;
 }
 
-function getPool() {
+export function getPool() {
   const globalForPool = globalThis as GlobalWithPool;
   if (globalForPool.__woneAdminPool) return globalForPool.__woneAdminPool;
 
@@ -324,7 +324,7 @@ function yearSelect(column: string | null): string {
 }
 
 async function loadAdapterUpcomingRowsFromDb(
-  client: PoolClient,
+  client: Pool | PoolClient,
 ): Promise<{ sourceTable: string | null; sourceStatus: DashboardData["adapterUpcoming"]["sourceStatus"]; rows: AdapterUpcomingRaw[] }> {
   const tableResult = await client.query<{ tableName: string | null }>(
     `select to_regclass('public.adapter_upcoming_events')::text as "tableName"`,
@@ -500,15 +500,15 @@ function buildAdapterUpcomingReview(params: {
 
 export async function getDashboardData(): Promise<DashboardData> {
   const pool = getPool();
-  const client = await pool.connect();
-  try {
-    const [
+  const client = pool;
+  const [
       racesResult,
       editionsResult,
       categoriesResult,
       mappingsResult,
       tableCountsResult,
       categoryResultCountsResult,
+      editionResultSourcesResult,
       registrationCountsResult,
       unmatchedCountsResult,
       upcomingResult,
@@ -521,7 +521,9 @@ export async function getDashboardData(): Promise<DashboardData> {
       `),
       client.query<RaceEditionRow>(`
         select id,"raceId",title,location,city,state,"stateCode",country,year,
-               "eventDate","eventEndDate",source,"createdBy","resultsLocked","resultsScrapedAt"
+               "eventDate"::date::text as "eventDate",
+               "eventEndDate"::date::text as "eventEndDate",
+               source,"createdBy","resultsLocked","resultsScrapedAt"
         from public.race_editions
         order by year desc nulls last, "eventDate" desc nulls last, title nulls last, id
       `),
@@ -552,6 +554,13 @@ export async function getDashboardData(): Promise<DashboardData> {
         select "raceCategoryId" as id, count(*)::int as count
         from public.results
         group by "raceCategoryId"
+      `),
+      client.query<{ id: string; sources: string[] | null }>(`
+        select rc."raceEditionId" as id,
+               coalesce(array_remove(array_agg(distinct res.source::text), null), '{}') as sources
+        from public.race_categories rc
+        join public.results res on res."raceCategoryId" = rc.id
+        group by rc."raceEditionId"
       `),
       client.query<CountRow>(`
         select "raceEditionId" as id, count(*)::int as count
@@ -725,6 +734,9 @@ export async function getDashboardData(): Promise<DashboardData> {
     ]);
 
     const resultCountsByCategory = countMap(categoryResultCountsResult.rows);
+    const resultSourcesByEdition = new Map(
+      editionResultSourcesResult.rows.map((row) => [row.id, splitPgArray(row.sources)]),
+    );
     const registrationCountsByEdition = countMap(registrationCountsResult.rows);
     const unmatchedCountsByEdition = countMap(unmatchedCountsResult.rows);
 
@@ -753,6 +765,7 @@ export async function getDashboardData(): Promise<DashboardData> {
           categories: editionCategories,
           mappings,
           resultCount: editionCategories.reduce((sum, category) => sum + (category.resultCount ?? 0), 0),
+          resultSources: resultSourcesByEdition.get(edition.id) ?? [],
           registrationCount: registrationCountsByEdition.get(edition.id) ?? 0,
           unmatchedEntryCount: unmatchedCountsByEdition.get(edition.id) ?? 0,
           issues: [],
@@ -865,7 +878,7 @@ export async function getDashboardData(): Promise<DashboardData> {
       sourceStatus: adapterUpcomingSource.sourceStatus,
     });
 
-    return {
+  return {
       generatedAt: new Date().toISOString(),
       counts,
       issueSummary: summarizeIssues(issues),
@@ -897,8 +910,5 @@ export async function getDashboardData(): Promise<DashboardData> {
         byFailureCode: countBy(unverifiedFailedItems, (item) => item.verificationFailureCode),
         items: unverifiedFailedItems,
       },
-    };
-  } finally {
-    client.release();
-  }
+  };
 }
