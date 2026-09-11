@@ -1,3 +1,5 @@
+import { ClerkProvider, Show, UserButton } from "@clerk/nextjs";
+
 import "./globals.css";
 
 export const metadata = {
@@ -7,8 +9,17 @@ export const metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" suppressHydrationWarning>
-      <body>{children}</body>
-    </html>
+    <ClerkProvider signInUrl="/sign-in" signInFallbackRedirectUrl="/ops">
+      <html lang="en" suppressHydrationWarning>
+        <body>
+          <Show when="signed-in">
+            <div className="ops-auth-dock" aria-label="Signed-in administrator">
+              <UserButton />
+            </div>
+          </Show>
+          {children}
+        </body>
+      </html>
+    </ClerkProvider>
   );
 }

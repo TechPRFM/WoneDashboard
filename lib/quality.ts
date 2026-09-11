@@ -110,6 +110,9 @@ export interface AdapterUpcomingReviewItem {
   sourceId: string | null;
   externalKeyGuess: string | null;
   categoriesText: string | null;
+  catalogStatus: string | null;
+  proposalPayload: unknown;
+  lastSeenAt: string | null;
   matchedInDb: boolean;
   matchReason: string;
   matchedRaceTitle: string | null;

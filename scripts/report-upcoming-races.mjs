@@ -175,7 +175,7 @@ function expectedDistanceKm(label) {
   const text = label.toLowerCase();
   if (isAgeGroupLabel(label)) return null;
   if (/\bhalf\s+marathon\b/.test(text)) return 21.1;
-  if (/\bmarathon\b/.test(text) && !/\bhalf\b/.test(text) && !/\bultra\b/.test(text)) return 42.195;
+  if (/\bmarathon\b/.test(text) && !(/\bhalf\b/.test(text)) && !(/\bultra\b/.test(text))) return 42.2;
   const kmMatch = text.match(/\b(\d+(?:\.\d+)?)\s*k(?:m)?\b/);
   if (kmMatch) return Number(kmMatch[1]);
   const mileMatch = text.match(/\b(\d+(?:\.\d+)?)\s*(?:mi|mile|miles)\b/);

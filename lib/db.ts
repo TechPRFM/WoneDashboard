@@ -27,6 +27,9 @@ type AdapterUpcomingRaw = {
   sourceId?: string | null;
   externalKeyGuess?: string | null;
   categoriesText?: string | string[] | null;
+  catalogStatus?: string | null;
+  proposalPayload?: unknown;
+  lastSeenAt?: string | null;
 };
 
 type GlobalWithPool = typeof globalThis & {
@@ -353,6 +356,9 @@ async function loadAdapterUpcomingRowsFromDb(
   const sourceId = firstColumn(columns, ["sourceId", "source_id", "eventSlug", "event_slug", "eventUrl", "event_url"]);
   const externalKeyGuess = firstColumn(columns, ["externalEventKey", "external_event_key", "externalKey", "external_key", "sourceId", "source_id"]);
   const categories = firstColumn(columns, ["categoriesText", "categories_text", "categories", "category"]);
+  const catalogStatus = firstColumn(columns, ["catalogStatus", "catalog_status"]);
+  const proposalPayload = firstColumn(columns, ["proposalPayload", "proposal_payload"]);
+  const lastSeenAt = firstColumn(columns, ["lastSeenAt", "last_seen_at", "updatedAt", "updated_at"]);
 
   const rows = await client.query<AdapterUpcomingRaw>(`
     select
@@ -366,6 +372,9 @@ async function loadAdapterUpcomingRowsFromDb(
       ${textSelect(sourceId, "sourceId")},
       ${textSelect(externalKeyGuess, "externalKeyGuess")},
       ${textSelect(categories, "categoriesText")}
+      ,${textSelect(catalogStatus, "catalogStatus")}
+      ,${proposalPayload ? `${quoteIdent(proposalPayload)} as "proposalPayload"` : `null::jsonb as "proposalPayload"`}
+      ,${textSelect(lastSeenAt, "lastSeenAt")}
     from public.adapter_upcoming_events
     order by ${eventDate ? quoteIdent(eventDate) : quoteIdent(eventName)} nulls last
     limit 2000
@@ -473,6 +482,9 @@ function buildAdapterUpcomingReview(params: {
         sourceId,
         externalKeyGuess,
         categoriesText: categoriesText(row.categoriesText),
+        catalogStatus: row.catalogStatus ? String(row.catalogStatus) : null,
+        proposalPayload: row.proposalPayload ?? null,
+        lastSeenAt: row.lastSeenAt ? String(row.lastSeenAt) : null,
         matchedInDb,
         matchReason: matchReason || "not found in DB by mapping/title/date",
         matchedRaceTitle,

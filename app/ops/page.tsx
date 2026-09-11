@@ -1,4 +1,5 @@
 import OpsDashboard from "../../components/OpsDashboard";
+import { requireOpsPage } from "../../lib/ops-auth";
 import { getOpsDashboardData } from "../../lib/ops-db";
 
 export const dynamic = "force-dynamic";
@@ -16,6 +17,7 @@ function SetupState({ error }: { error: unknown }) {
 }
 
 export default async function OpsPage() {
+  await requireOpsPage();
   try {
     const data = await getOpsDashboardData();
     return <OpsDashboard data={data} />;

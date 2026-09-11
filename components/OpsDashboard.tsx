@@ -70,6 +70,15 @@ function words(value: string | null | undefined) {
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
+function apiMessage(payload: unknown, fallback: string) {
+  if (!payload || typeof payload !== "object") return fallback;
+  const value = payload as { error?: string | { message?: string }; outcome?: { failureMessage?: string } };
+  if (typeof value.error === "string") return value.error;
+  if (value.error?.message) return value.error.message;
+  if (value.outcome?.failureMessage) return value.outcome.failureMessage;
+  return fallback;
+}
+
 function initials(value: string) {
   return value
     .split(/\s+/)
@@ -233,7 +242,7 @@ function DashboardView({ data, go }: { data: OpsDashboardData; go: (view: View) 
   );
 }
 
-type ResultLane = "all" | "no_locator" | "no_adapter" | "no_data" | "waiting_runner" | "verified";
+type ResultLane = "all" | "open_decision" | "non_finisher" | "no_locator" | "no_adapter" | "no_data" | "waiting_runner" | "verified";
 type TatLane = "all" | "breached" | "soon" | "ok" | "paused";
 type QueueMode = "race" | "runner";
 
@@ -251,6 +260,9 @@ type VerificationCandidate = {
     distance_km?: number;
     result_link?: string;
     external_event_key?: string;
+    status?: string;
+    finish_status?: string;
+    outcome?: string;
   };
   ranks?: {
     overall_rank?: number;
@@ -272,6 +284,8 @@ type QueueGroup = {
 
 const RESULT_LANES: Array<{ id: ResultLane; label: string }> = [
   { id: "all", label: "All lanes" },
+  { id: "open_decision", label: "Open decision" },
+  { id: "non_finisher", label: "DNS / DNF / DQ" },
   { id: "no_locator", label: "No unique link" },
   { id: "no_adapter", label: "No adapter" },
   { id: "no_data", label: "No data" },
@@ -291,16 +305,39 @@ function candidateRows(item: OpsQueueItem): VerificationCandidate[] {
   return Array.isArray(item.candidates) ? (item.candidates as VerificationCandidate[]) : [];
 }
 
-function diagnostics(item: OpsQueueItem): Record<string, unknown> {
-  return item.diagnostics && typeof item.diagnostics === "object" && !Array.isArray(item.diagnostics)
-    ? (item.diagnostics as Record<string, unknown>)
-    : {};
+type OfficialOutcome = "DNS" | "DNF" | "DQ" | "FINISHED" | "UNKNOWN";
+
+function officialOutcome(item: OpsQueueItem): OfficialOutcome {
+  const candidate = candidateRows(item)[0];
+  const evidence = [
+    candidate?.result?.status,
+    candidate?.result?.finish_status,
+    candidate?.result?.outcome,
+    candidate?.review_note,
+    item.failureCode,
+    item.verificationError,
+    item.candidates == null ? "" : JSON.stringify(item.candidates),
+  ].join(" ").toUpperCase();
+  if (/(^|\W)DNS(\W|$)|DID NOT START/.test(evidence)) return "DNS";
+  if (/(^|\W)DNF(\W|$)|DID NOT FINISH/.test(evidence)) return "DNF";
+  if (/(^|\W)DQ(\W|$)|DISQUALIF/.test(evidence)) return "DQ";
+  if (candidate?.result?.chip_time || candidate?.result?.gun_time || candidate?.result?.total_time) return "FINISHED";
+  return "UNKNOWN";
+}
+
+function isOpenDecision(item: OpsQueueItem) {
+  return Boolean(
+    (item.failureCode === "LINK_OPEN_DECISION" || item.userAction === "OPEN_RESULT_LINK") ||
+    (item.timingLink && !candidateRows(item).length && item.verificationStatus !== "VERIFIED"),
+  );
 }
 
 function laneFor(item: OpsQueueItem): ResultLane {
   if (item.verificationStatus === "VERIFIED" || item.status === "MATCHED") return "verified";
+  if (["DNS", "DNF", "DQ"].includes(officialOutcome(item))) return "non_finisher";
+  if (isOpenDecision(item)) return "open_decision";
   if (item.userAction === "PROVIDE_LINK" && /ATHLETE_NOT|BIB_MISMATCH/.test(item.failureCode || "")) return "no_locator";
-  if (/MAPPING_MISS|MAPPING_AMBIGUOUS/.test(item.failureCode || "") || (!item.adapterKeys.length && !diagnostics(item).adapter)) return "no_adapter";
+  if (/MAPPING_MISS|MAPPING_AMBIGUOUS/.test(item.failureCode || "") || (!item.adapterKeys.length && !item.source)) return "no_adapter";
   if (/ADAPTER_BUG|INTERNAL_ERROR|CATEGORY_NOT|RACE_MISMATCH/.test(item.failureCode || "") || item.verificationStatus === "FAILED") return "no_data";
   if (item.userAction === "PROVIDE_LINK") return "waiting_runner";
   return "no_data";
@@ -308,19 +345,6 @@ function laneFor(item: OpsQueueItem): ResultLane {
 
 function laneLabel(lane: ResultLane) {
   return RESULT_LANES.find((item) => item.id === lane)?.label || words(lane);
-}
-
-function ageOn(dateOfBirth: string | null, eventDate: string | null) {
-  if (!dateOfBirth || !eventDate) return null;
-  const birth = new Date(dateOfBirth);
-  const event = new Date(eventDate);
-  if (Number.isNaN(birth.getTime()) || Number.isNaN(event.getTime())) return null;
-  let age = event.getUTCFullYear() - birth.getUTCFullYear();
-  if (
-    event.getUTCMonth() < birth.getUTCMonth() ||
-    (event.getUTCMonth() === birth.getUTCMonth() && event.getUTCDate() < birth.getUTCDate())
-  ) age -= 1;
-  return age;
 }
 
 function tatHours(item: OpsQueueItem) {
@@ -344,8 +368,7 @@ function resultName(item: OpsQueueItem) {
 }
 
 function sourceFor(item: OpsQueueItem) {
-  const fromDiagnostics = diagnostics(item).adapter;
-  return item.adapterKeys.join(", ") || (typeof fromDiagnostics === "string" ? fromDiagnostics : "") || item.source || "No adapter";
+  return item.adapterKeys.join(", ") || item.source || "No adapter";
 }
 
 function queueGroupKey(item: OpsQueueItem) {
@@ -412,34 +435,181 @@ function CandidateBlock({ item }: { item: OpsQueueItem }) {
 }
 
 function RunnerActionBar({ item, notify }: { item: OpsQueueItem; notify: (message: string) => void }) {
-  if (item.verificationStatus === "VERIFIED") return null;
   const candidate = candidateRows(item)[0];
+  const [link, setLink] = useState(item.timingLink || candidate?.result?.result_link || "");
+  const [busy, setBusy] = useState(false);
+  const [inlineError, setInlineError] = useState("");
+  const [detail, setDetail] = useState<Record<string, unknown> | null>(null);
+  const [edit, setEdit] = useState({
+    raceName: item.raceName || "",
+    date: item.eventDate?.slice(0, 10) || "",
+    bib: item.bib || "",
+    time: item.requestedTime || "",
+    category: item.category || "",
+    distanceKm: item.distanceKm == null ? "" : String(item.distanceKm),
+    sport: item.sport || "",
+    location: item.location || "",
+  });
+  const isStravaLinked = Boolean(item.stravaActivityId || /STRAVA/.test(item.source || ""));
+
+  const decide = async (outcome: "DNS" | "DNF" | "NON_TIMED" | null) => {
+    setBusy(true);
+    setInlineError("");
+    try {
+      const response = await fetch(`/api/ops/entries/${item.id}/outcome`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ outcome, note: "Updated from the WONE operations dashboard." }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(apiMessage(payload, "Outcome could not be saved."));
+      notify(`${outcome ? outcome.replaceAll("_", " ") : "Outcome cleared"} saved and audited.`);
+      window.setTimeout(() => window.location.reload(), 650);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Outcome could not be saved.";
+      setInlineError(message);
+      notify(message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const fetchResult = async () => {
+    setBusy(true);
+    setInlineError("");
+    try {
+      const hasLink = Boolean(link.trim());
+      const response = await fetch(
+        hasLink ? `/api/ops/entries/${item.id}/verify-link` : `/api/ops/entries/${item.id}/rearm`,
+        {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(hasLink
+          ? { url: link.trim(), keepOnFailure: false, note: "Result link supplied by operations." }
+          : { runNow: true, note: "Flow A re-armed and run by operations." }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(apiMessage(payload, "Verification could not be started."));
+      const outcome = payload?.outcome;
+      notify(outcome?.ok === false ? apiMessage(payload, "Verification finished without a match.") : "Verification completed and the row was refreshed.");
+      window.setTimeout(() => window.location.reload(), 900);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Verification could not be started.";
+      setInlineError(message);
+      notify(message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const saveEdit = async () => {
+    if (isStravaLinked && edit.sport && edit.sport !== item.sport) {
+      const confirmed = window.confirm("Changing sport may detach the linked Strava activity. Continue?");
+      if (!confirmed) return;
+    }
+    setBusy(true);
+    setInlineError("");
+    try {
+      const response = await fetch(`/api/ops/entries/${item.id}/edit`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          raceName: edit.raceName.trim(),
+          date: edit.date || null,
+          bib: edit.bib.trim() || null,
+          time: edit.time.trim() || null,
+          category: edit.category.trim() || null,
+          distanceKm: edit.distanceKm === "" ? null : Number(edit.distanceKm),
+          sport: edit.sport || null,
+          location: edit.location.trim() || null,
+          note: "Entry fields corrected from the WONE operations dashboard.",
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(apiMessage(payload, "Entry could not be updated."));
+      notify(`Saved ${Array.isArray(payload.changed) ? payload.changed.join(", ") : "entry changes"} and recorded the audit.`);
+      window.setTimeout(() => window.location.reload(), 650);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Entry could not be updated.";
+      setInlineError(message);
+      notify(message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const loadDetail = async () => {
+    setBusy(true);
+    setInlineError("");
+    try {
+      const response = await fetch(`/api/ops/entries/${item.id}`, { cache: "no-store" });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(apiMessage(payload, "Evidence could not be loaded."));
+      setDetail(payload);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Evidence could not be loaded.";
+      setInlineError(message);
+      notify(message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  if (item.verificationStatus === "VERIFIED") return null;
   return (
-    <div className="ops-result-actions">
+    <div className="ops-result-actions-wrap">
+      {isStravaLinked && <div className="ops-entry-state-chip">Strava activity attached</div>}
+      {isOpenDecision(item) && (
+        <div className="ops-open-decision">
+          <b>Open decision</b>
+          <span>The official link exists, but no structured finisher row was returned. Open the source and classify it as DNS, DNF, untimed, or retry extraction.</span>
+        </div>
+      )}
+      <div className="ops-result-actions">
       {item.timingLink || candidate?.result?.result_link ? (
         <a href={item.timingLink || candidate?.result?.result_link} target="_blank" rel="noreferrer">Open result link</a>
       ) : (
         <label>
           <span>LINK</span>
-          <input aria-label={`Result link for ${resultName(item)}`} placeholder={`Paste ${resultName(item).split(" ")[0]}'s unique result link...`} />
+          <input value={link} onChange={(event) => setLink(event.target.value)} aria-label={`Result link for ${resultName(item)}`} placeholder={`Paste ${resultName(item).split(" ")[0]}'s unique result link...`} />
         </label>
       )}
-      <button type="button" className="primary" onClick={() => notify("Review-only mode: fetch is not connected to a write API yet.")}>Fetch &amp; pull</button>
+      <button type="button" disabled={busy} className="primary" onClick={fetchResult}>{link.trim() ? "Fetch & pull" : "Run mapped adapter"}</button>
       <button type="button" onClick={() => notify("Review-only mode: no runner message was sent.")}>Ask runner</button>
+      <button type="button" disabled={busy} onClick={loadDetail}>Inspect evidence</button>
       <details>
         <summary>Mark as</summary>
         <div>
-          <button type="button" onClick={() => notify("Review-only mode: DNF/DQ was not saved.")}>DNF / DQ</button>
-          <button type="button" onClick={() => notify("Review-only mode: DNS was not saved.")}>DNS / did not start</button>
-          <button type="button" onClick={() => notify("Review-only mode: Strava-only was not saved.")}>Strava-only</button>
+          <button type="button" disabled={busy} onClick={() => decide("DNF")}>DNF / did not finish</button>
+          <button type="button" disabled={busy} onClick={() => decide("DNS")}>DNS / did not start</button>
+          <button type="button" disabled={busy} onClick={() => decide("NON_TIMED")}>Untimed / no official clock</button>
+          <button type="button" disabled={busy} onClick={() => decide(null)}>Clear outcome</button>
         </div>
       </details>
+      </div>
+      <details className="ops-entry-edit">
+        <summary>Edit unverified entry</summary>
+        <div>
+          <label>Race<input value={edit.raceName} onChange={(event) => setEdit({ ...edit, raceName: event.target.value })} /></label>
+          <label>Date<input type="date" value={edit.date} onChange={(event) => setEdit({ ...edit, date: event.target.value })} /></label>
+          <label>Bib<input value={edit.bib} onChange={(event) => setEdit({ ...edit, bib: event.target.value })} /></label>
+          <label>Time<input value={edit.time} onChange={(event) => setEdit({ ...edit, time: event.target.value })} placeholder="HH:MM:SS" /></label>
+          <label>Category<input value={edit.category} onChange={(event) => setEdit({ ...edit, category: event.target.value })} /></label>
+          <label>Distance km<input type="number" min="0" step="0.001" value={edit.distanceKm} onChange={(event) => setEdit({ ...edit, distanceKm: event.target.value })} /></label>
+          <label>Sport<input value={edit.sport} onChange={(event) => setEdit({ ...edit, sport: event.target.value.toUpperCase() })} /></label>
+          <label>Location<input value={edit.location} onChange={(event) => setEdit({ ...edit, location: event.target.value })} /></label>
+          <button type="button" disabled={busy} onClick={saveEdit}>Save changes</button>
+        </div>
+      </details>
+      {detail && (
+        <details className="ops-entry-evidence" open>
+          <summary>Private evidence and audit</summary>
+          <pre>{JSON.stringify(detail, null, 2)}</pre>
+        </details>
+      )}
+      {inlineError && <p className="ops-inline-error">{inlineError}</p>}
     </div>
   );
 }
 
 function QueueRunnerRow({ item, notify }: { item: OpsQueueItem; notify: (message: string) => void }) {
-  const age = ageOn(item.dateOfBirth, item.eventDate);
+  const age = item.ageAtEvent;
   const candidate = candidateRows(item)[0];
   return (
     <div className="ops-result-runner">
@@ -455,6 +625,7 @@ function QueueRunnerRow({ item, notify }: { item: OpsQueueItem; notify: (message
             <span className={!item.bib ? "missing" : ""}>{item.bib ? `bib ${item.bib}` : "bib missing"}</span>
             <i />
             <span>{item.requestedTime ? `Import ${item.requestedTime}` : "no imported time"}</span>
+            {officialOutcome(item) !== "UNKNOWN" && <><i /><span className="outcome">Official: {officialOutcome(item)}</span></>}
           </p>
         </div>
         <div className="ops-result-runner-state">
@@ -580,7 +751,7 @@ function ResultsView({ data, query }: { data: OpsDashboardData; query: string })
     return Array.from(grouped.entries()).sort((left, right) => right[1].length - left[1].length);
   }, [items]);
   const laneCounts = useMemo(() => {
-    const counts: Record<ResultLane, number> = { all: data.queue.length, no_locator: 0, no_adapter: 0, no_data: 0, waiting_runner: 0, verified: 0 };
+    const counts: Record<ResultLane, number> = { all: data.queue.length, open_decision: 0, non_finisher: 0, no_locator: 0, no_adapter: 0, no_data: 0, waiting_runner: 0, verified: 0 };
     for (const item of data.queue) counts[laneFor(item)] += 1;
     return counts;
   }, [data.queue]);
@@ -599,6 +770,11 @@ function ResultsView({ data, query }: { data: OpsDashboardData; query: string })
         <div className={breached ? "danger" : ""}><strong>{count(breached)}</strong><span>TAT breached</span></div>
         <div className="teal"><strong>{count(paused)}</strong><span>On runner</span></div>
       </div>
+      {data.queuePage.total > data.queuePage.loaded && (
+        <p className="ops-queue-window">
+          Showing the newest {count(data.queuePage.loaded)} of {count(data.queuePage.total)} queue rows. Use search and status filters for the loaded operational window.
+        </p>
+      )}
       <div className="ops-result-controls">
         <div className="ops-result-chips">
           {RESULT_LANES.map((item) => (
@@ -810,7 +986,13 @@ function UpcomingView({ data, query }: { data: OpsDashboardData; query: string }
               <p>CHECK AND ADD</p>
               <h3>{item.eventName}</h3>
               <span>{item.location || item.city || "No location"} / {item.categoriesText || "Categories not captured"}</span>
-              <div className="ops-pills"><Pill tone="danger">Not found in DB</Pill><Pill>{item.adapterName}</Pill></div>
+              <div className="ops-pills">
+                <Pill tone="danger">Not found in DB</Pill>
+                <Pill tone={item.catalogStatus === "REVIEW_REQUIRED" ? "warning" : "neutral"}>{words(item.catalogStatus || "NEW")}</Pill>
+                <Pill>{item.adapterName}</Pill>
+                {item.lastSeenAt && <Pill>Seen {date(item.lastSeenAt)}</Pill>}
+              </div>
+              {item.proposalPayload != null && <small>Race / Edition / Category / Mapping proposal is ready for admin review.</small>}
             </div>
           </article>
         ))}
@@ -821,29 +1003,97 @@ function UpcomingView({ data, query }: { data: OpsDashboardData; query: string }
 }
 
 function AdaptersView({ data, query }: { data: OpsDashboardData; query: string }) {
+  const [busy, setBusy] = useState<"discovery" | "stress" | null>(null);
+  const [message, setMessage] = useState("");
   const failureCounts = data.catalog.unverifiedFailed.items.reduce<Record<string, number>>((acc, item) => {
     for (const key of item.adapterKeys) acc[key] = (acc[key] || 0) + 1;
     return acc;
   }, {});
-  const rows = data.catalog.adapterSummary.filter((item) => item.adapterKey.toLowerCase().includes(query.toLowerCase()));
+  const summaryByKey = new Map(data.catalog.adapterSummary.map((item) => [item.adapterKey, item]));
+  const reliabilityByKey = new Map(data.adapterOperations.reliability.map((item) => [item.adapterKey, item]));
+  const signalsByKey = new Map(data.adapterOperations.queueSignals.map((item) => [item.adapterKey, item]));
+  const rows = data.adapterOperations.capabilities
+    .map((capability) => ({
+      capability,
+      summary: summaryByKey.get(capability.adapterKey),
+      reliability: reliabilityByKey.get(capability.adapterKey),
+      signals: signalsByKey.get(capability.adapterKey),
+    }))
+    .filter(({ capability, summary }) => summary || capability.adapterKey.toLowerCase().includes(query.toLowerCase()))
+    .filter(({ capability }) => [capability.adapterKey, capability.adapterName, capability.note].join(" ").toLowerCase().includes(query.toLowerCase()));
+  const discovery = data.adapterOperations.discovery;
+  const stress = data.adapterOperations.stress;
+  const runOperation = async (operation: "discovery" | "stress") => {
+    setBusy(operation);
+    setMessage("");
+    try {
+      const response = await fetch(operation === "discovery" ? "/api/cron/adapters" : "/api/admin/adapters/stress", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: operation === "stress" ? JSON.stringify({ callsPerAdapter: 30, concurrencyPerAdapter: 2 }) : "{}",
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || `${operation} failed`);
+      setMessage(operation === "discovery" ? "Discovery completed. Refreshing live data." : "Reliability run completed. Refreshing live data.");
+      window.setTimeout(() => window.location.reload(), 900);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : `${operation} failed`);
+    } finally {
+      setBusy(null);
+    }
+  };
   return (
-    <section className="ops-table-card">
-      <div className="ops-table-head"><span>Adapter</span><span>Mappings</span><span>Editions</span><span>Races</span><span>Failed verification</span><span>Signal</span></div>
-      {rows.map((adapter) => {
-        const failures = failureCounts[adapter.adapterKey] || 0;
+    <>
+      <section className="ops-adapter-control-grid">
+        <article>
+          <p className="ops-eyebrow">NIGHTLY DISCOVERY</p>
+          <h3>{discovery.status.replaceAll("_", " ")}</h3>
+          <span>Last run: {stamp(discovery.lastRunAt)} / Next: {stamp(discovery.nextRunAt)}</span>
+          <div><b>{count(discovery.adaptersChecked)}</b><small>adapters</small><b>{count(discovery.eventsSeen)}</b><small>upcoming seen</small><b>{count(discovery.newEvents)}</b><small>need review</small></div>
+          <button type="button" disabled={busy !== null} onClick={() => runOperation("discovery")}>{busy === "discovery" ? "Running..." : "Run discovery now"}</button>
+        </article>
+        <article>
+          <p className="ops-eyebrow">RELIABILITY</p>
+          <h3>{stress.successRate == null ? "No run" : `${(stress.successRate * 100).toFixed(1)}% success`}</h3>
+          <span>{count(stress.calls)} controlled calls / {count(stress.errors)} failures / {stress.source}</span>
+          <div><b>{count(stress.adaptersChecked)}</b><small>adapters</small><b>{count(stress.calls)}</b><small>calls</small><b>{count(stress.errors)}</b><small>failures</small></div>
+          <button type="button" disabled={busy !== null} onClick={() => runOperation("stress")}>{busy === "stress" ? "Testing..." : "Run safe stress test"}</button>
+        </article>
+        <article className="ops-adapter-policy">
+          <p className="ops-eyebrow">MATCH POLICY</p>
+          <h3>Name and bib first</h3>
+          <span>Age and gender are not sent as hard search filters. They are used only to rank or reject ambiguous candidates after the adapter returns them.</span>
+          <div><b>ALL</b><small>categories searched</small><b>0</b><small>age-filtered</small><b>0</b><small>gender-filtered</small></div>
+        </article>
+      </section>
+      {message && <div className="ops-adapter-message">{message}</div>}
+      <section className="ops-adapter-matrix">
+        <div className="ops-adapter-matrix-head">
+          <span>Adapter and search behavior</span><span>Catalog</span><span>Age / gender</span><span>Official outcomes</span><span>Reliability</span><span>State</span>
+        </div>
+        {rows.map(({ capability, summary, reliability, signals }) => {
+          const failures = failureCounts[capability.adapterKey] || 0;
+          const nonFinishers = (signals?.dnsRows || 0) + (signals?.dnfRows || 0) + (signals?.dqRows || 0);
+          const successRate = reliability?.successRate;
+          const signalTone = successRate == null ? "warning" : successRate >= 0.98 && !failures ? "success" : successRate >= 0.9 ? "warning" : "danger";
         return (
-          <article key={adapter.adapterKey}>
-            <strong><i className={failures ? "warn" : ""} />{adapter.adapterKey}</strong>
-            <span>{count(adapter.mappings)}</span>
-            <span>{count(adapter.editions)}</span>
-            <span>{count(adapter.races)}</span>
-            <span>{count(failures)}</span>
-            <Pill tone={failures ? "warning" : "success"}>{failures ? "Review" : "Healthy"}</Pill>
+          <article key={capability.adapterKey}>
+            <div className="ops-adapter-identity">
+              <strong><i className={failures ? "warn" : ""} />{capability.adapterName}</strong>
+              <small>{capability.adapterKey} / {words(capability.categorySearch)}</small>
+              <p>{capability.note}</p>
+            </div>
+            <div><b>{count(summary?.mappings)}</b><small>mappings</small><span>{count(summary?.editions)} editions / {count(summary?.races)} races</span></div>
+            <div><b>No / No</b><small>used to find</small><span>{capability.capturesAge ? "Age captured" : "No age"} / {capability.capturesGender ? "gender captured" : "no gender"}</span></div>
+            <div><b>{count(nonFinishers)}</b><small>DNS/DNF/DQ found</small><span>{count(signals?.linksWithoutStructuredData)} linked no-data / {count(signals?.openDecisionRows)} open</span></div>
+            <div><b>{successRate == null ? "Not tested" : `${(successRate * 100).toFixed(1)}%`}</b><small>{count(reliability?.calls)} calls</small><span>{reliability?.p95LatencyMs == null ? "No latency" : `p95 ${(reliability.p95LatencyMs / 1000).toFixed(1)}s`}</span></div>
+            <div><Pill tone={signalTone}>{signalTone === "success" ? "Healthy" : signalTone === "danger" ? "At risk" : "Review"}</Pill><small>{count(failures)} verification failures</small></div>
           </article>
         );
       })}
       {!rows.length && <Empty>No adapters match this search.</Empty>}
-    </section>
+      </section>
+    </>
   );
 }
 
@@ -897,7 +1147,7 @@ function Flag({ issue }: { issue: DashboardIssue }) {
 
 function UsersView({ data, query }: { data: OpsDashboardData; query: string }) {
   const users = data.users.filter((user) =>
-    [user.name, user.email, user.location, user.onboardingStatus].join(" ").toLowerCase().includes(query.toLowerCase()),
+    [user.name, user.location, user.onboardingStatus].join(" ").toLowerCase().includes(query.toLowerCase()),
   );
   return (
     <section className="ops-user-grid">
@@ -906,7 +1156,7 @@ function UsersView({ data, query }: { data: OpsDashboardData; query: string }) {
           <div className="ops-avatar">{initials(user.name)}</div>
           <div className="ops-user-title">
             <h3>{user.name}</h3>
-            <p>{user.email || "No email"} / {user.location || "No location"}</p>
+            <p>{user.location || "No location"}</p>
           </div>
           <Pill tone={user.onboardingStatus === "COMPLETED" ? "success" : "warning"}>{words(user.onboardingStatus)}</Pill>
           <div className="ops-user-stats">

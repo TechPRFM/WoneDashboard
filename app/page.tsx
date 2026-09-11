@@ -1,5 +1,6 @@
 import AdminDashboard from "../components/AdminDashboard";
 import { getDashboardData } from "../lib/db";
+import { requireOpsPage } from "../lib/ops-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -21,6 +22,7 @@ function SetupState({ error }: { error: unknown }) {
 }
 
 export default async function Page() {
+  await requireOpsPage();
   try {
     const data = await getDashboardData();
     return <AdminDashboard data={data} />;

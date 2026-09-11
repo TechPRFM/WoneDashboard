@@ -6,19 +6,21 @@
     "dev": "next dev -p 3050",
     "build": "next build",
     "start": "next start -p 3050",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "db:adapter-ops": "node scripts/apply-adapter-ops-schema.mjs"
   },
   "dependencies": {
-    "next": "latest",
-    "pg": "latest",
-    "react": "latest",
-    "react-dom": "latest"
+    "@clerk/nextjs": "7.5.1",
+    "next": "16.3.4",
+    "pg": "8.22.0",
+    "react": "19.2.7",
+    "react-dom": "19.2.7"
   },
   "devDependencies": {
-    "@types/node": "latest",
-    "@types/pg": "latest",
-    "@types/react": "latest",
-    "@types/react-dom": "latest",
-    "typescript": "latest"
+    "@types/node": "26.1.0",
+    "@types/pg": "8.20.0",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "typescript": "6.0.3"
   }
 }

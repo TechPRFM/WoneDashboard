@@ -1,12 +1,12 @@
 import "server-only";
 
 import { getDashboardData, getPool } from "./db";
+import { loadAdapterOperations, type AdapterOperationsData } from "./adapter-ops";
 import type { DashboardData } from "./quality";
 
 export type OpsUser = {
   id: string;
   name: string;
-  email: string | null;
   location: string | null;
   onboardingStatus: string | null;
   isAdmin: boolean;
@@ -33,7 +33,9 @@ export type OpsQueueItem = {
   eventDate: string | null;
   location: string | null;
   gender: string | null;
-  dateOfBirth: string | null;
+  ageAtEvent: number | null;
+  stravaActivityId: string | null;
+  sport: string | null;
   source: string | null;
   status: string | null;
   verificationStatus: string | null;
@@ -47,8 +49,6 @@ export type OpsQueueItem = {
   matchedResultId: string | null;
   adapterKeys: string[];
   candidates: unknown;
-  diagnostics: unknown;
-  rawRowData: unknown;
   createdAt: string;
   updatedAt: string;
   retryAfter: string | null;
@@ -71,9 +71,11 @@ export type OpsBreakdown = {
 
 export type OpsDashboardData = {
   catalog: DashboardData;
+  adapterOperations: AdapterOperationsData;
   users: OpsUser[];
   queue: OpsQueueItem[];
   logs: OpsLog[];
+  queuePage: { loaded: number; total: number; limit: number };
   breakdowns: {
     queueStatus: OpsBreakdown[];
     verificationStatus: OpsBreakdown[];
@@ -95,11 +97,16 @@ function breakdown(rows: Array<{ key: string | null; count: number }>): OpsBreak
 }
 
 export async function getOpsDashboardData(): Promise<OpsDashboardData> {
-  const [catalog, operations] = await Promise.all([getDashboardData(), loadOperationsData()]);
-  return { catalog, ...operations };
+  const pool = getPool();
+  const [catalog, operations, adapterOperations] = await Promise.all([
+    getDashboardData(),
+    loadOperationsData(),
+    loadAdapterOperations(pool),
+  ]);
+  return { catalog, adapterOperations, ...operations };
 }
 
-async function loadOperationsData(): Promise<Omit<OpsDashboardData, "catalog">> {
+async function loadOperationsData(): Promise<Omit<OpsDashboardData, "catalog" | "adapterOperations">> {
   const pool = getPool();
   const [
       usersResult,
@@ -145,7 +152,6 @@ async function loadOperationsData(): Promise<Omit<OpsDashboardData, "catalog">> 
         select
           u.id,
           trim(concat_ws(' ', u."firstName", u."middleName", u."lastName")) as name,
-          u.email,
           nullif(concat_ws(', ', u.city, u.state, u.country), '') as location,
           u."onboardingStatus"::text as "onboardingStatus",
           coalesce(u."isAdmin", false) as "isAdmin",
@@ -163,6 +169,7 @@ async function loadOperationsData(): Promise<Omit<OpsDashboardData, "catalog">> 
         left join gmail on gmail."userId" = u.id
         left join strava on strava."userId" = u.id
         order by "unmatchedCount" desc, u."createdAt" desc
+        limit 500
       `),
       pool.query<OpsQueueItem>(`
         select
@@ -179,7 +186,13 @@ async function loadOperationsData(): Promise<Omit<OpsDashboardData, "catalog">> 
           entry.date::text as "eventDate",
           max(coalesce(entry.location, matched_edition.location, matched_race.location)) as location,
           usr.gender::text as gender,
-          usr."dateOfBirth"::text as "dateOfBirth",
+          case
+            when usr."dateOfBirth" is not null and entry.date is not null
+            then extract(year from age(entry.date::date, usr."dateOfBirth"::date))::int
+            else null
+          end as "ageAtEvent",
+          entry."stravaActivityId",
+          entry.sport::text as sport,
           entry.source::text as source,
           entry.status::text as status,
           entry."verificationStatus"::text as "verificationStatus",
@@ -193,8 +206,6 @@ async function loadOperationsData(): Promise<Omit<OpsDashboardData, "catalog">> 
           entry."matchedResultId",
           coalesce(array_remove(array_agg(distinct mapping."adapterKey"), null), '{}') as "adapterKeys",
           entry."verificationCandidates" as candidates,
-          entry."verificationDiagnostics" as diagnostics,
-          entry."rawRowData",
           entry."createdAt"::text as "createdAt",
           entry."updatedAt"::text as "updatedAt",
           entry."verificationRetryAfter"::text as "retryAfter"
@@ -212,6 +223,7 @@ async function loadOperationsData(): Promise<Omit<OpsDashboardData, "catalog">> 
             else 2
           end,
           entry."updatedAt" desc
+        limit 500
       `),
       pool.query<OpsLog>(`
         select
@@ -255,7 +267,7 @@ async function loadOperationsData(): Promise<Omit<OpsDashboardData, "catalog">> 
   return {
       users: usersResult.rows.map((user) => ({
         ...user,
-        name: user.name || user.email || "Unnamed user",
+        name: user.name || "Unnamed user",
         createdAt: iso(user.createdAt) ?? "",
         claimCount: Number(user.claimCount),
         personalBestCount: Number(user.personalBestCount),
@@ -270,7 +282,6 @@ async function loadOperationsData(): Promise<Omit<OpsDashboardData, "catalog">> 
         scrapeCount: Number(item.scrapeCount),
         adapterKeys: Array.isArray(item.adapterKeys) ? item.adapterKeys : [],
         eventDate: iso(item.eventDate),
-        dateOfBirth: iso(item.dateOfBirth),
         createdAt: iso(item.createdAt) ?? "",
         updatedAt: iso(item.updatedAt) ?? "",
         retryAfter: iso(item.retryAfter),
@@ -281,6 +292,11 @@ async function loadOperationsData(): Promise<Omit<OpsDashboardData, "catalog">> 
         createdAt: iso(log.createdAt) ?? "",
         processedAt: iso(log.processedAt),
       })),
+      queuePage: {
+        loaded: queueResult.rows.length,
+        total: queueStatusResult.rows.reduce((sum, row) => sum + Number(row.count), 0),
+        limit: 500,
+      },
       breakdowns: {
         queueStatus: breakdown(queueStatusResult.rows),
         verificationStatus: breakdown(verificationStatusResult.rows),
