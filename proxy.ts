@@ -9,6 +9,8 @@ export default clerkMiddleware((_auth, request) => {
     }
   }
   return NextResponse.next();
+}, {
+  frontendApiProxy: { enabled: false },
 });
 
 export const config = {
