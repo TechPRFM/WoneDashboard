@@ -550,7 +550,8 @@ function RunnerActionBar({ item, notify }: { item: OpsQueueItem; notify: (messag
       const payload = await response.json();
       if (!response.ok) throw new Error(apiMessage(payload, "Entry could not be re-armed."));
       setDetail(payload);
-      notify(payload.mapping?.found === false ? "No mapping found. Review the catalog before verification." : "Re-armed. Eligible entries may be picked up by the verification scheduler.");
+      const mappingMissing = payload.mapping?.found === false || payload.mapping?.kind === "miss";
+      notify(mappingMissing ? "Re-armed, but no mapping was found. Review the catalog before verification." : "Re-armed. Eligible entries may be picked up by the verification scheduler.");
     } catch (error) {
       setInlineError(error instanceof Error ? error.message : "Entry could not be re-armed.");
     } finally {
