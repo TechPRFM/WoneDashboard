@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 
 import { callMainApp } from "../../../../../../lib/main-app";
 import { forwardMainApp, requireOpsApi } from "../../../../../../lib/ops-api";
+import { validateOpsRequest } from "../../../../../../lib/ops-request";
 
 const OUTCOMES = new Set(["DNS", "DNF", "NON_TIMED"]);
 
@@ -9,7 +10,9 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
   const denied = await requireOpsApi();
   if (denied) return denied;
   const { id } = await context.params;
-  const body = await request.json().catch(() => ({}));
+  const validated = validateOpsRequest("outcome", await request.json().catch(() => null));
+  if (!validated.ok) return Response.json(validated, { status: 422 });
+  const body = validated.body;
   const outcome = body.outcome == null ? null : String(body.outcome).toUpperCase();
   if (outcome !== null && !OUTCOMES.has(outcome)) {
     return Response.json(

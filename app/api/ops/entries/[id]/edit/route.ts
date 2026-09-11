@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 
 import { callMainApp } from "../../../../../../lib/main-app";
 import { forwardMainApp, requireOpsApi } from "../../../../../../lib/ops-api";
+import { validateOpsRequest } from "../../../../../../lib/ops-request";
 
 const ALLOWED_FIELDS = new Set([
   "raceName",
@@ -19,7 +20,9 @@ export async function PATCH(request: NextRequest, context: { params: Promise<{ i
   const denied = await requireOpsApi();
   if (denied) return denied;
   const { id } = await context.params;
-  const body = await request.json().catch(() => null);
+  const validated = validateOpsRequest("edit", await request.json().catch(() => null));
+  if (!validated.ok) return Response.json(validated, { status: 422 });
+  const body = validated.body;
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     return Response.json(
       { ok: false, error: { code: "VALIDATION", message: "A JSON object is required." } },
