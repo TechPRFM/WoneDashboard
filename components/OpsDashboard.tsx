@@ -285,7 +285,7 @@ type QueueGroup = {
 const RESULT_LANES: Array<{ id: ResultLane; label: string }> = [
   { id: "all", label: "All lanes" },
   { id: "open_decision", label: "Open decision" },
-  { id: "non_finisher", label: "DNS / DNF / DQ" },
+  { id: "non_finisher", label: "DNS / DNF / Untimed / DQ" },
   { id: "no_locator", label: "No unique link" },
   { id: "no_adapter", label: "No adapter" },
   { id: "no_data", label: "No data" },
@@ -305,9 +305,10 @@ function candidateRows(item: OpsQueueItem): VerificationCandidate[] {
   return Array.isArray(item.candidates) ? (item.candidates as VerificationCandidate[]) : [];
 }
 
-type OfficialOutcome = "DNS" | "DNF" | "DQ" | "FINISHED" | "UNKNOWN";
+type OfficialOutcome = "DNS" | "DNF" | "NON_TIMED" | "DQ" | "FINISHED" | "UNKNOWN";
 
 function officialOutcome(item: OpsQueueItem): OfficialOutcome {
+  if (item.participationOutcome) return item.participationOutcome;
   const candidate = candidateRows(item)[0];
   const evidence = [
     candidate?.result?.status,
@@ -334,7 +335,7 @@ function isOpenDecision(item: OpsQueueItem) {
 
 function laneFor(item: OpsQueueItem): ResultLane {
   if (item.verificationStatus === "VERIFIED" || item.status === "MATCHED") return "verified";
-  if (["DNS", "DNF", "DQ"].includes(officialOutcome(item))) return "non_finisher";
+  if (["DNS", "DNF", "NON_TIMED", "DQ"].includes(officialOutcome(item))) return "non_finisher";
   if (isOpenDecision(item)) return "open_decision";
   if (item.userAction === "PROVIDE_LINK" && /ATHLETE_NOT|BIB_MISMATCH/.test(item.failureCode || "")) return "no_locator";
   if (/MAPPING_MISS|MAPPING_AMBIGUOUS/.test(item.failureCode || "") || (!item.adapterKeys.length && !item.source)) return "no_adapter";
@@ -348,6 +349,7 @@ function laneLabel(lane: ResultLane) {
 }
 
 function tatHours(item: OpsQueueItem) {
+  if (item.participationOutcome) return null;
   if (item.verificationStatus === "VERIFIED" || item.status === "MATCHED") return null;
   const start = new Date(item.updatedAt || item.createdAt).getTime();
   if (Number.isNaN(start)) return null;
@@ -405,6 +407,7 @@ function groupQueue(items: OpsQueueItem[]): QueueGroup[] {
 function TatChip({ item }: { item: OpsQueueItem }) {
   const lane = tatLane(item);
   const hours = tatHours(item);
+  if (item.participationOutcome) return <span className="ops-result-sla ops-sla-paused">{words(item.participationOutcome)} / recorded</span>;
   if (item.verificationStatus === "VERIFIED") return <span className="ops-result-tier ops-tier-verified">Verified / embedded</span>;
   if (lane === "paused") return <span className="ops-result-sla ops-sla-paused">Paused / runner</span>;
   if (lane === "breached") return <span className="ops-result-sla ops-sla-breach">{Math.abs(hours || 0)}h past TAT</span>;
@@ -535,6 +538,25 @@ function RunnerActionBar({ item, notify }: { item: OpsQueueItem; notify: (messag
       setBusy(false);
     }
   };
+  const rearmOnly = async () => {
+    setBusy(true);
+    setInlineError("");
+    try {
+      const response = await fetch(`/api/ops/entries/${item.id}/rearm`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ runNow: false, clearLink: false, note: "Re-armed by operations without an inline verification run." }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(apiMessage(payload, "Entry could not be re-armed."));
+      setDetail(payload);
+      notify(payload.mapping?.found === false ? "No mapping found. Review the catalog before verification." : "Re-armed. Eligible entries may be picked up by the verification scheduler.");
+    } catch (error) {
+      setInlineError(error instanceof Error ? error.message : "Entry could not be re-armed.");
+    } finally {
+      setBusy(false);
+    }
+  };
   const loadDetail = async () => {
     setBusy(true);
     setInlineError("");
@@ -551,7 +573,7 @@ function RunnerActionBar({ item, notify }: { item: OpsQueueItem; notify: (messag
       setBusy(false);
     }
   };
-  if (item.verificationStatus === "VERIFIED") return null;
+  if (item.verificationStatus === "VERIFIED" || item.matchedResultId || item.status === "MATCHED") return null;
   return (
     <div className="ops-result-actions-wrap">
       {isStravaLinked && <div className="ops-entry-state-chip">Strava activity attached</div>}
@@ -573,6 +595,7 @@ function RunnerActionBar({ item, notify }: { item: OpsQueueItem; notify: (messag
       <button type="button" disabled={busy} className="primary" onClick={fetchResult}>{link.trim() ? "Fetch & pull" : "Run mapped adapter"}</button>
       <button type="button" onClick={() => notify("Review-only mode: no runner message was sent.")}>Ask runner</button>
       <button type="button" disabled={busy} onClick={loadDetail}>Inspect evidence</button>
+      <button type="button" disabled={busy} onClick={rearmOnly}>Re-arm only</button>
       <details>
         <summary>Mark as</summary>
         <div>

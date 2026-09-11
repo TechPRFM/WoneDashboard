@@ -39,6 +39,7 @@ export type OpsQueueItem = {
   source: string | null;
   status: string | null;
   verificationStatus: string | null;
+  participationOutcome: "DNS" | "DNF" | "NON_TIMED" | null;
   failureCode: string | null;
   verificationError: string | null;
   userAction: string | null;
@@ -196,6 +197,7 @@ async function loadOperationsData(): Promise<Omit<OpsDashboardData, "catalog" | 
           entry.source::text as source,
           entry.status::text as status,
           entry."verificationStatus"::text as "verificationStatus",
+          entry."participationOutcome"::text as "participationOutcome",
           entry."verificationFailureCode" as "failureCode",
           entry."verificationError",
           entry."verificationUserAction" as "userAction",
