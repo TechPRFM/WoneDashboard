@@ -161,8 +161,8 @@ function Metric({
 
 function DashboardView({ data, go }: { data: OpsDashboardData; go: (view: View) => void }) {
   const { catalog } = data;
-  const activeQueue = data.queue.filter((item) => item.status === "IN_REVIEW" || item.status === "PENDING").length;
-  const failedQueue = data.queue.filter((item) => item.verificationStatus === "FAILED").length;
+  const activeQueue = data.breakdowns.queueStatus.filter((item) => ["IN_REVIEW", "PENDING"].includes(item.key)).reduce((sum, item) => sum + item.count, 0);
+  const failedQueue = data.breakdowns.verificationStatus.find((item) => item.key === "FAILED")?.count || 0;
   const outboxFailed = data.logs.filter((item) => item.status === "FAILED").length;
   const incompleteUsers = data.users.filter((user) => user.onboardingStatus !== "COMPLETED").length;
 
@@ -1234,7 +1234,7 @@ export default function OpsDashboard({ data }: { data: OpsDashboardData }) {
   const [view, setView] = useState<View>("dashboard");
   const [query, setQuery] = useState("");
   const counts: Partial<Record<View, number>> = {
-    results: data.queue.filter((item) => ["IN_REVIEW", "PENDING"].includes(item.status ?? "")).length,
+    results: data.breakdowns.queueStatus.filter((item) => ["IN_REVIEW", "PENDING"].includes(item.key)).reduce((sum, item) => sum + item.count, 0),
     races: data.catalog.counts.races,
     upcoming: data.catalog.upcomingReview.total + data.catalog.adapterUpcoming.needsAddOrReviewCount,
     adapters: data.catalog.adapterSummary.length,
@@ -1263,7 +1263,7 @@ export default function OpsDashboard({ data }: { data: OpsDashboardData }) {
           ))}
         </nav>
         <div className="ops-sidebar-foot">
-          <div>PR</div><span><strong>Production</strong><small>Read-only console</small></span>
+          <div>PR</div><span><strong>Production</strong><small>Audited admin actions</small></span>
         </div>
       </aside>
       <main className={`ops-main ${view === "results" ? "ops-results-mode" : ""}`}>
