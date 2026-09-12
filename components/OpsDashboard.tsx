@@ -646,6 +646,7 @@ function RunnerActionBar({ item, notify }: { item: OpsQueueItem; notify: (messag
 function QueueRunnerRow({ item, notify }: { item: OpsQueueItem; notify: (message: string) => void }) {
   const age = item.ageAtEvent;
   const candidate = candidateRows(item)[0];
+  const displayedBib = item.verifiedBib || item.bib;
   return (
     <div className="ops-result-runner">
       <div className="ops-result-runner-main">
@@ -657,9 +658,10 @@ function QueueRunnerRow({ item, notify }: { item: OpsQueueItem; notify: (message
             <i />
             <span>{age == null ? "DOB unknown" : `age ${age} on race day`}</span>
             <i />
-            <span className={!item.bib ? "missing" : ""}>{item.bib ? `bib ${item.bib}` : "bib missing"}</span>
+            <span className={!displayedBib ? "missing" : ""}>{displayedBib ? `bib ${displayedBib}` : "bib missing"}</span>
             <i />
-            <span>{item.requestedTime ? `Import ${item.requestedTime}` : "no imported time"}</span>
+            <span>{item.verifiedTime ? `Verified ${item.verifiedTime}` : item.requestedTime ? `Import ${item.requestedTime}` : "no imported time"}</span>
+            {item.verifiedLink && <a href={item.verifiedLink} target="_blank" rel="noreferrer">Official result</a>}
             {officialOutcome(item) !== "UNKNOWN" && <><i /><span className="outcome">Official: {officialOutcome(item)}</span></>}
           </p>
         </div>
@@ -687,7 +689,6 @@ function RaceQueueCard({
   onToggle: () => void;
   notify: (message: string) => void;
 }) {
-  const pending = group.items.filter((item) => item.verificationStatus !== "VERIFIED" && item.status !== "MATCHED").length;
   const nearest = group.items
     .map((item) => ({ item, hours: tatHours(item) }))
     .filter((entry) => entry.hours != null)
@@ -706,16 +707,17 @@ function RaceQueueCard({
         </span>
         <span className="ops-result-race-right">
           {nearest ? <TatChip item={nearest} /> : <Pill tone="success">Complete</Pill>}
-          <b>{pending}<small>{pending === 1 ? "runner" : "runners"}</small></b>
+          <b>{group.items.length}<small>{group.items.length === 1 ? "runner" : "runners"}</small></b>
           <em>{open ? "UP" : "DOWN"}</em>
         </span>
       </button>
       {open && (
         <div className="ops-result-race-body">
           <div className="ops-result-recommendation">
-            <b>Likely timed by {group.source}</b>
+            <b>{group.lane === "verified" ? "Verified result saved" : `Import / adapter source: ${group.source}`}</b>
             <span>
-              {group.items.some((item) => candidateRows(item).length)
+              {group.lane === "verified" ? "The result is linked to its runner. No further verification is needed."
+                : group.items.some((item) => candidateRows(item).length)
                 ? "Candidate evidence is already available. Review bib, distance, time, and confidence before confirming."
                 : "No usable candidate is stored yet. Check the mapping or ask the runner for their unique result link."}
             </span>

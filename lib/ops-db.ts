@@ -48,6 +48,9 @@ export type OpsQueueItem = {
   timingLink: string | null;
   matchedRaceEditionId: string | null;
   matchedResultId: string | null;
+  verifiedBib: string | null;
+  verifiedTime: string | null;
+  verifiedLink: string | null;
   adapterKeys: string[];
   candidates: unknown;
   createdAt: string;
@@ -206,12 +209,16 @@ async function loadOperationsData(): Promise<Omit<OpsDashboardData, "catalog" | 
           entry."timingLink",
           entry."matchedRaceEditionId",
           entry."matchedResultId",
+          max(verified_result."bibNumber") as "verifiedBib",
+          max(coalesce(verified_result."chipTime", verified_result."totalTime")) as "verifiedTime",
+          max(verified_result."timingLink") as "verifiedLink",
           coalesce(array_remove(array_agg(distinct mapping."adapterKey"), null), '{}') as "adapterKeys",
           entry."verificationCandidates" as candidates,
           entry."createdAt"::text as "createdAt",
           entry."updatedAt"::text as "updatedAt",
           entry."verificationRetryAfter"::text as "retryAfter"
         from public.unmatched_race_entries entry
+        left join public.results verified_result on verified_result.id = entry."matchedResultId"
         left join public.users usr on usr.id = entry."userId"
         left join public.race_editions matched_edition on matched_edition.id = entry."matchedRaceEditionId"
         left join public.races matched_race on matched_race.id = matched_edition."raceId"
