@@ -25,18 +25,30 @@ export async function callMainApp(
     return { status: 503, payload: { ok: false, error: { code: "NOT_CONFIGURED", message: "MAIN_APP_URL is not configured." } } };
   }
 
-  const response = await fetch(`${configuredBase}${path}`, {
-    method: options.method,
-    headers: {
-      Accept: "application/json",
-      Authorization: `Bearer ${token}`,
-      ...(options.body === undefined ? {} : { "Content-Type": "application/json" }),
-    },
-    body: options.body === undefined ? undefined : JSON.stringify(options.body),
-    cache: "no-store",
-    redirect: "manual",
-    signal: AbortSignal.timeout(115_000),
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${configuredBase}${path}`, {
+      method: options.method,
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${token}`,
+        ...(options.body === undefined ? {} : { "Content-Type": "application/json" }),
+      },
+      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      cache: "no-store",
+      redirect: "manual",
+      signal: AbortSignal.timeout(115_000),
+    });
+    } catch (error) {
+    const timedOut = error instanceof Error && ["TimeoutError", "AbortError"].includes(error.name);
+    return {
+      status: timedOut ? 504 : 502,
+      payload: { ok: false, error: {
+        code: timedOut ? "MAIN_APP_TIMEOUT" : "MAIN_APP_UNREACHABLE",
+        message: "The main app did not return a response. The operation may still have completed. Inspect the entry before retrying; do not submit it repeatedly.",
+      } },
+    };
+  }
 
   if (response.status >= 300 && response.status < 400) {
     return {
@@ -51,9 +63,13 @@ export async function callMainApp(
     };
   }
 
-  const payload = await response.json().catch(() => ({
-    ok: false,
-    error: { code: "INVALID_RESPONSE", message: `Main app returned HTTP ${response.status} without JSON.` },
-  }));
-  return { status: response.status, payload };
+  try {
+    const payload = await response.json();
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("Invalid response");
+    return { status: response.status, payload };
+  } catch {
+    return { status: 502, payload: { ok: false, error: {
+      code: "INVALID_RESPONSE", message: `Main app returned HTTP ${response.status} without a valid JSON object. Inspect the entry before retrying.`,
+    } } };
+  }
 }

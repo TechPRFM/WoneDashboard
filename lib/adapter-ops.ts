@@ -93,26 +93,6 @@ const CAPABILITIES: AdapterCapability[] = [
   note: String(note),
 }));
 
-// Last controlled baseline bundled with the dashboard. A DB-backed stress run replaces it.
-const BASELINE_RELIABILITY: AdapterReliability[] = [
-  ["ifinish", 50, 50, 0, 1, 2392.35, 5715.75, { ok: 50 }],
-  ["longrun", 50, 50, 0, 1, 3598.63, 16107.1, { ok: 50 }],
-  ["myraceindia", 50, 50, 0, 1, 1057.13, 1978.27, { ok: 50 }],
-  ["mysamay", 50, 50, 0, 1, 695.45, 926, { ok: 50 }],
-  ["racetime", 50, 40, 10, 0.8, 1371.85, 2093.67, { ok: 40, empty_result: 10 }],
-  ["runizen", 50, 50, 0, 1, 2956.25, 6754.65, { ok: 50 }],
-  ["sportstiming", 50, 50, 0, 1, 725.24, 3632.24, { ok: 50 }],
-].map(([adapterKey, calls, success, failure, successRate, p50LatencyMs, p95LatencyMs, statusCounts]) => ({
-  adapterKey: String(adapterKey),
-  calls: Number(calls),
-  success: Number(success),
-  failure: Number(failure),
-  successRate: Number(successRate),
-  p50LatencyMs: Number(p50LatencyMs),
-  p95LatencyMs: Number(p95LatencyMs),
-  statusCounts: statusCounts as Record<string, number>,
-}));
-
 function iso(value: unknown): string | null {
   if (!value) return null;
   if (value instanceof Date) return value.toISOString();
@@ -270,20 +250,20 @@ export async function loadAdapterOperations(pool: Pool): Promise<AdapterOperatio
     };
   }
 
-  let reliability = BASELINE_RELIABILITY;
+  let reliability: AdapterReliability[] = [];
   let stress: AdapterOperationsData["stress"] = {
     configured: Boolean(tables?.runs && tables?.results),
-    status: "BASELINE_ONLY",
-    lastRunAt: "2026-07-11T03:03:50.333Z",
+    status: "NEVER_RUN",
+    lastRunAt: null,
     nextRunAt: null,
-    adaptersChecked: BASELINE_RELIABILITY.length,
+    adaptersChecked: 0,
     eventsSeen: 0,
     newEvents: 0,
     proposals: 0,
-    errors: BASELINE_RELIABILITY.reduce((sum, item) => sum + item.failure, 0),
-    source: "controlled 350-call baseline",
-    calls: BASELINE_RELIABILITY.reduce((sum, item) => sum + item.calls, 0),
-    successRate: 340 / 350,
+    errors: 0,
+    source: "No DB-backed stress run",
+    calls: 0,
+    successRate: null,
   };
 
   if (tables?.runs && tables?.results) {
@@ -346,6 +326,11 @@ export async function loadAdapterOperations(pool: Pool): Promise<AdapterOperatio
     }
   }
 
+  discovery.configured = Boolean(tables?.upcoming && tables?.runs && tables?.results && process.env.ADAPTER_DISCOVERY_URL && process.env.ADAPTER_SERVICE_TOKEN && process.env.ADAPTER_OPS_DATABASE_URL);
+  stress.configured = Boolean(tables?.runs && tables?.results && process.env.ADAPTER_STRESS_URL && process.env.ADAPTER_SERVICE_TOKEN && process.env.ADAPTER_OPS_DATABASE_URL);
+  if (!discovery.configured) discovery.status = "SERVICE_NOT_CONFIGURED";
+  discovery.nextRunAt = discovery.configured && process.env.CRON_SECRET ? nextNightlyRun() : null;
+  if (!stress.configured) stress.status = "SERVICE_NOT_CONFIGURED";
   return {
     discovery,
     stress,

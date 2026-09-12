@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import type { OpsDashboardData, OpsQueueItem } from "../lib/ops-db";
 import type { DashboardIssue, RaceEditionGroup } from "../lib/quality";
+import { hasOpenDecision, verificationFailureCode } from "../lib/verification-state";
 
 type View = "dashboard" | "results" | "races" | "upcoming" | "adapters" | "flags" | "users" | "logs";
 
@@ -327,10 +328,7 @@ function officialOutcome(item: OpsQueueItem): OfficialOutcome {
 }
 
 function isOpenDecision(item: OpsQueueItem) {
-  return Boolean(
-    (item.failureCode === "LINK_OPEN_DECISION" || item.userAction === "OPEN_RESULT_LINK") ||
-    (item.timingLink && !candidateRows(item).length && item.verificationStatus !== "VERIFIED"),
-  );
+  return hasOpenDecision(item);
 }
 
 function laneFor(item: OpsQueueItem): ResultLane {
@@ -493,7 +491,14 @@ function RunnerActionBar({ item, notify }: { item: OpsQueueItem; notify: (messag
       const payload = await response.json();
       if (!response.ok) throw new Error(apiMessage(payload, "Verification could not be started."));
       const outcome = payload?.outcome;
-      notify(outcome?.ok === false ? apiMessage(payload, "Verification finished without a match.") : "Verification completed and the row was refreshed.");
+      setDetail(payload);
+      if (outcome?.ok === false) {
+        const message = apiMessage(payload, "Verification finished without a match.");
+        setInlineError(message);
+        notify(message);
+        return;
+      }
+      notify("Verification request completed. Refreshing the entry state.");
       window.setTimeout(() => window.location.reload(), 900);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Verification could not be started.";
@@ -578,6 +583,12 @@ function RunnerActionBar({ item, notify }: { item: OpsQueueItem; notify: (messag
   return (
     <div className="ops-result-actions-wrap">
       {isStravaLinked && <div className="ops-entry-state-chip">Strava activity attached</div>}
+      {!isOpenDecision(item) && (verificationFailureCode(item) || item.verificationError) && (
+        <div className="ops-open-decision" role="status">
+          <b>{(verificationFailureCode(item) || "Verification failed").replaceAll("_", " ")}</b>
+          <span>{item.verificationError || "Inspect evidence for the recorded failure before retrying."}</span>
+        </div>
+      )}
       {isOpenDecision(item) && (
         <div className="ops-open-decision">
           <b>Open decision</b>
@@ -594,7 +605,7 @@ function RunnerActionBar({ item, notify }: { item: OpsQueueItem; notify: (messag
         </label>
       )}
       <button type="button" disabled={busy} className="primary" onClick={fetchResult}>{link.trim() ? "Fetch & pull" : "Run mapped adapter"}</button>
-      <button type="button" onClick={() => notify("Review-only mode: no runner message was sent.")}>Ask runner</button>
+      <button type="button" disabled title="Runner messaging is not connected to a backend endpoint yet. No message will be sent.">Ask runner (not connected)</button>
       <button type="button" disabled={busy} onClick={loadDetail}>Inspect evidence</button>
       <button type="button" disabled={busy} onClick={rearmOnly}>Re-arm only</button>
       <details>
@@ -1051,7 +1062,7 @@ function AdaptersView({ data, query }: { data: OpsDashboardData; query: string }
     setBusy(operation);
     setMessage("");
     try {
-      const response = await fetch(operation === "discovery" ? "/api/cron/adapters" : "/api/admin/adapters/stress", {
+      const response = await fetch(operation === "discovery" ? "/api/admin/adapters/discover" : "/api/admin/adapters/stress", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: operation === "stress" ? JSON.stringify({ callsPerAdapter: 30, concurrencyPerAdapter: 2 }) : "{}",
@@ -1074,14 +1085,16 @@ function AdaptersView({ data, query }: { data: OpsDashboardData; query: string }
           <h3>{discovery.status.replaceAll("_", " ")}</h3>
           <span>Last run: {stamp(discovery.lastRunAt)} / Next: {stamp(discovery.nextRunAt)}</span>
           <div><b>{count(discovery.adaptersChecked)}</b><small>adapters</small><b>{count(discovery.eventsSeen)}</b><small>upcoming seen</small><b>{count(discovery.newEvents)}</b><small>need review</small></div>
-          <button type="button" disabled={busy !== null} onClick={() => runOperation("discovery")}>{busy === "discovery" ? "Running..." : "Run discovery now"}</button>
+          {!discovery.configured && <p>Discovery service is not connected. Listed events are stored DB records, not a fresh scan.</p>}
+          <button type="button" disabled={busy !== null || !discovery.configured} onClick={() => runOperation("discovery")}>{busy === "discovery" ? "Running..." : "Run discovery now"}</button>
         </article>
         <article>
           <p className="ops-eyebrow">RELIABILITY</p>
           <h3>{stress.successRate == null ? "No run" : `${(stress.successRate * 100).toFixed(1)}% success`}</h3>
           <span>{count(stress.calls)} controlled calls / {count(stress.errors)} failures / {stress.source}</span>
           <div><b>{count(stress.adaptersChecked)}</b><small>adapters</small><b>{count(stress.calls)}</b><small>calls</small><b>{count(stress.errors)}</b><small>failures</small></div>
-          <button type="button" disabled={busy !== null} onClick={() => runOperation("stress")}>{busy === "stress" ? "Testing..." : "Run safe stress test"}</button>
+          {!stress.configured && <p>Stress-test service is not connected. Any displayed run is historical.</p>}
+          <button type="button" disabled={busy !== null || !stress.configured} onClick={() => runOperation("stress")}>{busy === "stress" ? "Testing..." : "Run safe stress test"}</button>
         </article>
         <article className="ops-adapter-policy">
           <p className="ops-eyebrow">MATCH POLICY</p>
