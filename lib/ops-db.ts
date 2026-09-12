@@ -218,13 +218,7 @@ async function loadOperationsData(): Promise<Omit<OpsDashboardData, "catalog" | 
         left join public.race_edition_mappings mapping
           on mapping."raceEditionId" = entry."matchedRaceEditionId"
         group by entry.id, usr.id
-        order by
-          case entry."verificationStatus"::text
-            when 'FAILED' then 0
-            when 'IDLE' then 1
-            else 2
-          end,
-          entry."updatedAt" desc
+        order by entry."updatedAt" desc, entry.id
         limit 500
       `),
       pool.query<OpsLog>(`

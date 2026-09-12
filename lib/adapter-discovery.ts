@@ -189,5 +189,3 @@ export async function executeDiscovery(trigger: "CRON" | "MANUAL" = "CRON") {
   }
   return { ok: true, runId, adaptersChecked: adapterResults.length, eventsSeen: events.length, newEvents: inserted };
 }
-
-
